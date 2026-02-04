@@ -1,1 +1,1 @@
-from mcfacts.__version__ import __version__
+from athutils.__version__ import __version__

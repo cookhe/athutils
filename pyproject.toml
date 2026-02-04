@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 include-package-data = true
 
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ["athutils"]
 
 # [project.urls]
 # "Homepage" = "https://github.com/bmckernan/test_mcfacts"
