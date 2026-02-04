@@ -64,4 +64,4 @@ classifiers = [
 dynamic = [ "version" ]
 
 [tool.pytest.ini_options]
-pythonpath = "src"
+pythonpath = "athutils"
