@@ -1,0 +1,67 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+# Data files that are packaged must be included in the MANIFEST.in file
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# [project.urls]
+# "Homepage" = "https://github.com/bmckernan/test_mcfacts"
+# "Bug Reports" = "https://github.com/bmckernan/test_mcfacts/issues"
+# "Source" = "https://github.com/bmckernan/test_mcfacts"
+
+[project]
+name = "athutils"
+description = "Utilities for interacting with data produce by the Athena hydrodynamic code."
+readme = "README.md"
+license = {file = "LICENSE"}
+keywords = [
+    "astronomy",
+    "information analysis",
+    "physics"
+]
+
+# How do we want to do author ordering, if at all?
+authors = [
+    {name = "Harrison Cook"} #email = "enter@email.com"},
+]
+
+# In the future, the people actively developing / maintaining the project may be different!
+maintainers = [
+    {name = "Harry Cook"} #email = "enter@email.com"},
+
+]
+
+classifiers = [
+"Development Status :: 2 - Pre-Alpha",
+"Programming Language :: Python :: 3",
+"Operating System :: OS Independent",
+"Intended Audience :: Science/Research",
+"Topic :: Scientific/Engineering :: Astronomy",
+"Topic :: Scientific/Engineering :: Physics",
+"Topic :: Scientific/Engineering :: Information Analysis",
+]
+
+# requires-python = ">= 3.8, < 3.14"
+
+# dependencies = [
+#     "numpy>=2.0,<2.4.0",
+#     "matplotlib>=3.5.2",
+#     "pagn",
+#     "h5py",
+#     "cv2",
+#     "scienceplots",
+#     "json",
+#     "astropy",
+#     "pylab",
+# ]
+
+#TODO: Add description and other dynamically defined variables created in setup.py
+dynamic = [ "version" ]
+
+[tool.pytest.ini_options]
+pythonpath = "src"

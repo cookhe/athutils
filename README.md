@@ -5,6 +5,6 @@ Utilities for interacting with [Athena](https://princetonuniversity.github.io/At
 Install the utilities
 
 ```
-$ python -m pip install --editable .
+pip install --editable .
 ```
 
