@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 include-package-data = true
 
 [tool.setuptools.packages.find]
-where = ["athutils"]
+where = ["src"]
 
 # [project.urls]
 # "Homepage" = "https://github.com/bmckernan/test_mcfacts"
@@ -64,4 +64,4 @@ classifiers = [
 dynamic = [ "version" ]
 
 [tool.pytest.ini_options]
-pythonpath = "athutils"
+pythonpath = "src"

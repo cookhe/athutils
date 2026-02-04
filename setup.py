@@ -1,6 +1,6 @@
 import setuptools
 
-version_file = "__version__.py"
+version_file = "src/athutils/__version__.py"
 
 def get_version():
 
