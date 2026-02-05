@@ -2,7 +2,9 @@
 
 import os
 import numpy as np
+import h5py
 from dataclasses import dataclass
+from typing import Optional, List, Dict
 
 ATHINPUT_TYPES = {
     "problem_id"   : str,
@@ -69,25 +71,96 @@ class AthenaSlice:
     axis: str
     index: int
 
-    def save(self, filename):
+    def save_npz(self, filename):
+        """Save slice to compressed NPZ format."""
         np.savez_compressed(
             filename,
-            x=self.x,
-            y=self.y,
-            z=self.z
             t=self.t,
             dt=self.dt,
             snapshot=self.snapshot,
             axis=self.axis,
             index=self.index,
+            **self.coords,
             **self.data
         )
 
+    def save_hdf5(self, filename, mode='a'):
+        """Save slice to HDF5 format.
+        
+        Parameters
+        ----------
+        filename : str
+            HDF5 file path
+        mode : str
+            File mode ('w' for write, 'a' for append)
+        """
+        with h5py.File(filename, mode) as f:
+            # Create group for this snapshot
+            grp_name = f"snapshot_{self.snapshot:04d}"
+            
+            # Remove existing group if present
+            if grp_name in f:
+                del f[grp_name]
+            
+            grp = f.create_group(grp_name)
+            
+            # Save metadata
+            grp.attrs['t'] = self.t
+            grp.attrs['dt'] = self.dt
+            grp.attrs['snapshot'] = self.snapshot
+            grp.attrs['axis'] = self.axis
+            grp.attrs['index'] = self.index
+            
+            # Save coordinates
+            coords_grp = grp.create_group('coords')
+            for key, val in self.coords.items():
+                coords_grp.create_dataset(key, data=val, compression='gzip')
+            
+            # Save data fields
+            data_grp = grp.create_group('data')
+            for key, val in self.data.items():
+                data_grp.create_dataset(key, data=val, compression='gzip')
+
+    @classmethod
+    def load_hdf5(cls, filename, snapshot):
+        """Load a slice from HDF5 file.
+        
+        Parameters
+        ----------
+        filename : str
+            HDF5 file path
+        snapshot : int
+            Snapshot number to load
+            
+        Returns
+        -------
+        AthenaSlice
+        """
+        with h5py.File(filename, 'r') as f:
+            grp_name = f"snapshot_{snapshot:04d}"
+            if grp_name not in f:
+                raise KeyError(f"Snapshot {snapshot} not found in {filename}")
+            
+            grp = f[grp_name]
+            
+            # Load metadata
+            t = grp.attrs['t']
+            dt = grp.attrs['dt']
+            snap = grp.attrs['snapshot']
+            axis = grp.attrs['axis']
+            index = grp.attrs['index']
+            
+            # Load coordinates
+            coords = {key: val[:] for key, val in grp['coords'].items()}
+            
+            # Load data
+            data = {key: val[:] for key, val in grp['data'].items()}
+            
+            return cls(coords=coords, data=data, t=t, dt=dt, 
+                      snapshot=snap, axis=axis, index=index)
+
 class Athena:
-    def __init__(self,
-                 file_athinput,
-                 datadir
-                ):
+    def __init__(self, file_athinput, datadir):
         self.inputs = self.parse_athinput(file_athinput)
         self.problem_id = self.inputs["problem_id"]
         self.Ncores = self.inputs["Ncores"]
@@ -100,13 +173,53 @@ class Athena:
 
     
     def slice(self, snapshot, *, x3=None, x2=None, x1=None, fields=None):
+        """Extract a 2D slice from a 3D snapshot.
+        
+        Parameters
+        ----------
+        snapshot : int
+            Snapshot number
+        x3, x2, x1 : int, optional
+            Index along the axis to slice (exactly one must be specified)
+        fields : list, optional
+            List of fields to extract. If None, extracts all standard fields.
+            
+        Returns
+        -------
+        AthenaSlice
+        """
+        if fields is None:
+            fields = ["rho", "rux1", "rux2", "rux3", "eng"]
+
         return self._construct_2Dslice(
-            datadir=self.datadir,
             snapshot=snapshot,
             x3index=x3,
             x2index=x2,
             x1index=x1,
+            fields=fields
         )
+    
+    def slice_to_hdf5(self, snapshots, hdf5_file, *, x3=None, x2=None, x1=None, fields=None):
+        """Extract slices from multiple snapshots and save to a single HDF5 file.
+        
+        Parameters
+        ----------
+        snapshots : list of int
+            List of snapshot numbers to process
+        hdf5_file : str
+            Output HDF5 file path
+        x3, x2, x1 : int, optional
+            Index along the axis to slice (exactly one must be specified)
+        fields : list, optional
+            List of fields to extract
+        """
+        for i, snapshot in enumerate(snapshots):
+            print(f"Processing snapshot {snapshot} ({i+1}/{len(snapshots)})")
+            slice_data = self.slice(snapshot, x3=x3, x2=x2, x1=x1, fields=fields)
+            mode = 'w' if i == 0 else 'a'
+            slice_data.save_hdf5(hdf5_file, mode=mode)
+            
+        print(f"Saved {len(snapshots)} snapshots to {hdf5_file}")
     
     def _get_core_filename(self, snapshot, core_id):
         """"Construct the snapshot filename for a given core
@@ -151,7 +264,7 @@ class Athena:
             return os.path.join(self.datadir, f"id{core_id}",f"{job}-id{core_id}.{snapshot:0>4}.bin")
 
     def _initialize_slice_arrays(self, full_array_shape, fields):
-        """Initialize arrays to hold sliced data for each specified field.
+        """Initialize arrays to hold sliced data_arrays for each specified field.
         
         Parameters
         ----------
@@ -163,7 +276,7 @@ class Athena:
         Returns
         -------
         dict
-            Dictionary with data field names as keys and initialized arrays as values.
+            Dictionary with data_arrays field names as keys and initialized arrays as values.
         """
         return {field: np.zeros(full_array_shape) for field in fields}
     
@@ -183,36 +296,35 @@ class Athena:
             List of core IDs that contain the specified slice.
         """
         # Construct 3D array of core numbers 
-        cores_array = np.arange(0,self.inputs["Ncores"]).reshape(
-            (self.inputs["Nzcores"],
-             self.inputs["Nycores"],
-             self.inputs["Nxcores"])
-            )
-        # Create 2D array of the cores containing the desired slice
+        cores_array = np.arange(0, self.inputs["Ncores"]).reshape(
+            (self.inputs["NGrid_x3"],
+             self.inputs["NGrid_x2"],
+             self.inputs["NGrid_x1"])
+        )
         return cores_array[coreslice]
 
-    def _core_location(self, z, y, x, z0, y0, x0, dz, dy, dx, axis):
-        """Return a core's location within the monolithic data array.
+    def _core_location(self, x3, x2, x1, x3_0, x2_0, x1_0, dx3, dx2, dx1, axis):
+        """Return a core's location within the monolithic data_arrays array.
 
         Parameters
         ----------
-        z : ndarray
+        x3 : ndarray
             Local z coordinate array.
-        y : ndarray
+        x2 : ndarray
             Local y coordinate array.
-        x : ndarray
+        x1 : ndarray
             Local x coordinate array.
-        z0 : float
+        x3_0 : float
             Initial coordinate in the z-array.
-        y0 : float
+        x2_0 : float
             Initial coordinate in the y-array.
-        x0 : float
+        x1_0 : float
             Initial coordinate in the x-array.
-        dz : float
+        dx3 : float
             Cell size along z direction.
-        dy : float
+        dx2 : float
             Cell size along y direction.
-        dx : float
+        dx1 : float
             Cell size along x direction
         axis : str
             One of {"x3", "x2', "x1"} denoting the axis of the slice.
@@ -220,45 +332,32 @@ class Athena:
         Returns
         -------
         slice
-            Indices used to place data from a core into the monolithic array.
+            Indices used to place data_arrays from a core into the monolithic array.
         """
 
         # recurrence relations for each axis used to index monolithical dataset
-        iz0 = np.int32(np.round((z[0]-z0)/dz)) # removed the 12 order, becsuse rounded improperly
-        iy0 = np.int32(np.round((y[0]-y0)/dy, 12))
-        ix0 = np.int32(np.round((x[0]-x0)/dx, 12))
+        ix3_0 = np.int32(np.round((x3[0] - x3_0) / dx3))
+        ix2_0 = np.int32(np.round((x2[0] - x2_0) / dx2))
+        ix1_0 = np.int32(np.round((x1[0] - x1_0) / dx1))
 
-        iz1 = iz0 + len(z)
-        iy1 = iy0 + len(y)
-        ix1 = ix0 + len(x)
+        ix3_1 = ix3_0 + len(x3)
+        ix2_1 = ix2_0 + len(x2)
+        ix1_1 = ix1_0 + len(x1)
 
         # Location in full snapshot
         if axis == "x3":
-            return np.s_[iy0:iy1,ix0:ix1]
+            return np.s_[ix2_0:ix2_1, ix1_0:ix1_1]
         if axis == "x2":
-            return np.s_[iz0:iz1,ix0:ix1]
+            return np.s_[ix3_0:ix3_1, ix1_0:ix1_1]
         if axis == "x1":
-            return np.s_[iz0:iz1,iy0:iy1]
-        
-    def _insert_core_slice(self, arrays, core_data, coreloc):
-        """Insert data from a core into the monolithic data arrays.
+            return np.s_[ix3_0:ix3_1, ix2_0:ix2_1]        
 
-        Parameters
-        ----------
-        arrays : dict
-            Dictionary containing the monolithic data arrays.
-        core_data : dict
-            Dictionary containing the data arrays from the core.
-        coreloc : slice
-            Slice object defining the location in the monolithic arrays
-            where the core data should be inserted.
-        """
-        for field, arr in arrays.items():
-            arr[coreloc] = core_data[field]
-        
+    def _construct_2Dslice(self, snapshot, x3index=None, x2index=None, x1index=None, fields=None):
+        """Construct 2D slice from distributed binary files."""
 
-    def _construct_2Dslice(self, snapshot, x3index=None, x2index=None, x1index=None):
-    
+        if fields is None:
+            fields = ["rho", "rux1", "rux2", "rux3", "eng"]
+
         indices = np.array([x3index, x2index, x1index])
         
         # Test that exactly one coordinate is specified
@@ -267,82 +366,76 @@ class Athena:
         
         # Record axis and plane information for use during slice construction
         axis = "x3" if x3index is not None else "x2" if x2index is not None else "x1"
-        plane = self.AXES[axis]["plane"]
+        # plane = self.AXES[axis]["plane"]
         
         coreslice, local_slice, full_array_shape = self._construct_slice_shape(indices)
-
-        # Get list of cores containing the slice
         corelist = self._construct_core_list(coreslice)
 
-        fields = ["rho", "rux", "ruy", "ruz", "eng"]
+        # Initialize arrays for all fields
         arrays = self._initialize_slice_arrays(full_array_shape, fields)
+
+        # Initialize coordinate tracking
+        x1_all = x2_all = x3_all = None
+        x10 = x20 = x30 = None
+        dx1 = dx2 = dx3 = None
+        t = dt = None
 
         # loop through cores
         for j, core_id in enumerate(corelist.flatten()):
             filename = self._get_core_filename(snapshot, core_id)
-            print(filename)
+            print(f"  Reading {filename}")
 
-            # z, y, x, rho, rux, ruy, ruz, eng, t, dt = read_binary(filename, local_slice)
-            z, y, x, *data, t, dt = read_2Dfrom3D(filename, local_slice)
-            core_data = dict(zip(fields, data))
+            # Read data from this core
+            x3, x2, x1, *data_arrays, t, dt = read_2Dfrom3D(filename, local_slice)
+
+            # Package data_arrays into a dictionary
+            core_data = dict(zip(fields, data_arrays))
             
-            
-            core_local_slice = self._core_location(z, y, x,
-                                                   z[0], y[0], x[0],
-                                                   z[1]-z[0], y[1]-y[0], x[1]-x[0],
-                                                   axis= "x3" if x3index is not None else "x2" if x2index is not None else "x1")
-        
-            
+            # Initialize reference coordinates on first iteration            
             if j == 0:
-                # x0=x[0]
-                # y0=y[0]
-                # z0=z[0]
-                # dx=x[1]-x[0]
-                # dy=y[1]-y[0]
-                # dz=z[1]-z[0]
+                x30, x20, x10 = x3[0], x2[0], x1[0]
+                dx3 = x3[1] - x3[0] if len(x3) > 1 else 0
+                dx2 = x2[1] - x2[0] if len(x2) > 1 else 0
+                dx1 = x1[1] - x1[0] if len(x1) > 1 else 0
 
-                # initiate the full-length x,y,z arrays
-                # x_all = x
-                # y_all = y
-                # z_all = z
+                x3_all = x3.copy()
+                x2_all = x2.copy()
+                x1_all = x1.copy()
+            else:
+                # Extend coordinate arrays if needed
+                if len(x3) > 0 and len(x3_all) > 0 and np.isclose(x3[0], x3_all[-1] + dx3):
+                    x3_all = np.concatenate((x3_all, x3))
+                if len(x2) > 0 and len(x2_all) > 0 and np.isclose(x2[0], x2_all[-1] + dx2):
+                    x2_all = np.concatenate((x2_all, x2))
+                if len(x1) > 0 and len(x1_all) > 0 and np.isclose(x1[0], x1_all[-1] + dx1): # np.isclose() used to handle machine precision deviations.
+                    x1_all = np.concatenate((x1_all, x1))
 
-                # add next set of coordinates if first value follows existing (limiting sum to machine precision)
-            if np.isclose(x[0], x_all[-1] + dx): # np.isclose() used to handle machine precision deviations.
-                x_all = np.concatenate((x_all,x), axis=0)
+            # Determine where this core's data goes in the full array
+            core_loc = self._core_location(x3, x2, x1, x30, x20, x10, dx3, dx2, dx1, axis)
 
-            if np.isclose(y[0], y_all[-1] + dy):
-                y_all = np.concatenate((y_all,y), axis=0)
+            # Insert core data_arrays into full arrays
+            for field in fields:
+                arrays[field][core_loc] = core_data[field]
 
-            if np.isclose(z[0], z_all[-1] + dz):
-                z_all = np.concatenate((z_all,z), axis=0)
-
-            # Populate coordinates for the sliced plane
-            coords = {}
-            if axis == "x3":
-                coords["x2"] = x2_all
-                coords["x1"] = x1_all
-            if axis == "x2":
-                coords["x3"] = z3_all
-                coords["x1"] = x1_all
-            if axis == "x1":
-                coords["x3"] = z3_all
-                coords["x2"] = x2_all
-
-            # # now populate the *_all arrays to recreate the monolithical dataset
-            rho_all[coreloc] = rho
-            rux_all[coreloc] = rux
-            ruy_all[coreloc] = ruy
-            ruz_all[coreloc] = ruz
-            eng_all[coreloc] = eng
-            
+        # Build coordinate dictionary for the sliced plane
+        coords = {}
+        if axis == "x3":
+            coords["x2"] = x2_all
+            coords["x1"] = x1_all
+        if axis == "x2":
+            coords["x3"] = x3_all
+            coords["x1"] = x1_all
+        if axis == "x1":
+            coords["x3"] = x3_all
+            coords["x2"] = x2_all
 
         return AthenaSlice(
         coords=coords,
         data=arrays,
         t=t,
         dt=dt,
-        snapshot=snapshot_num,
-        axis="x3" if x3index is not None else "x2" if x2index is not None else "x1",
+        snapshot=snapshot,
+        axis=axis,
         index=x3index or x2index or x1index
         )
 
@@ -366,6 +459,7 @@ class Athena:
             lines = f.readlines()
 
         athinput_dict = {}
+        skipped_keys = []
 
         for line in lines:
             if "=" in line and not line.startswith("#"):
@@ -374,10 +468,8 @@ class Athena:
                 value = value_w_comment.split("#")[0].strip()
 
                 if key not in ATHINPUT_TYPES:
-                # print(f"WARNING: key `{key}` not in ATHINPUT_TYPES, adding as float type for now, \
-                #       which may introduce unexpected behavior if {key} is a different type.")
                     if key in SKIP_KEYS:
-                        # print(f"Skipping key `{key}`.")
+                        skipped_keys.append(key)
                         continue
                     else:
                         try:
@@ -393,7 +485,8 @@ class Athena:
 
                 else:
                     athinput_dict[key] = ATHINPUT_TYPES[key](value)
-                print(f"Skipped keys: {SKIP_KEYS}")
+
+        print(f"Athinput file contains these keys but we didn't load them:\n   {skipped_keys}")
 
         # Add derived quantities
         athinput_dict["nx3_local"] = athinput_dict["Nx3"] // athinput_dict["NGrid_x3"]
@@ -402,132 +495,122 @@ class Athena:
         athinput_dict["Ncores"]    = athinput_dict["NGrid_x1"] * athinput_dict["NGrid_x2"] * athinput_dict["NGrid_x3"]
 
         return athinput_dict
-    
-
-        
+           
     def _construct_slice_shape(self, coords):
+        """Determine slice shape and core distribution."""
         # Get the slice of cores and define local coordinate
         # If x3 coordinate is spedified
-        if coords[0] != None:
+        if coords[0] is not None:  # x3 coordinate specified
             x3coord = coords[0]
             nx3_local = self.inputs["nx3_local"]
-            zproc_slice = x3coord // nx3_local
-            coreslice = np.s_[zproc_slice,:,:]
-            local_slice = np.s_[x3coord % nx3_local,:,:]
-            full_array_shape = (
-                self.inputs["Nx2"],
-                self.inputs["Nx1"]
-            )
-        # If x2 coordinate is spedified
-        if coords[1] != None:
+            x3proc_slice = x3coord // nx3_local
+            coreslice = np.s_[x3proc_slice, :, :]
+            local_slice = np.s_[x3coord % nx3_local, :, :]
+            full_array_shape = (self.inputs["Nx2"], self.inputs["Nx1"])
+
+        if coords[1] is not None:  # x2 coordinate spedified
             x2coord = coords[1]
             nx2_local = self.inputs["nx2_local"]
             yproc_slice = x2coord // nx2_local
-            coreslice = np.s_[:,yproc_slice,:]
-            local_slice = np.s_[:,x2coord%nx2_local,:]
-            full_array_shape = (
-                self.inputs["Nx3"],
-                self.inputs["Nx1"]
-            )
-        # If x1 coordinate is spedified
-        if coords[2] != None:
+            coreslice = np.s_[:, yproc_slice, :]
+            local_slice = np.s_[:, x2coord % nx2_local, :]
+            full_array_shape = (self.inputs["Nx3"], self.inputs["Nx1"])
+
+        if coords[2] is not None:  # x1 coordinate spedified
             x1coord = coords[2]
             nx1_local = self.inputs["nx1_local"]
             xproc_slice = x1coord // nx1_local
-            coreslice = np.s_[:,:,xproc_slice]
-            local_slice = np.s_[:,:,x1coord%nx1_local]
-            full_array_shape = (
-                self.inputs["Nx3"],
-                self.inputs["Nx2"]
-            )
+            coreslice = np.s_[:, :, xproc_slice]
+            local_slice = np.s_[:, :, x1coord % nx1_local]
+            full_array_shape = (self.inputs["Nx3"], self.inputs["Nx2"])
 
         return coreslice, local_slice, full_array_shape
 
 def read_2Dfrom3D(binary_file, local_slice):
-    """Read in data from a single Athena binary file.
+    """Read in data_arrays from a single Athena binary file.
 
     Parameters
     ----------
     file_binary : str
         Snapshot file in binary format.
     local_slice : slice
-        Slice object defining the local slice of data to read from the core.
+        Slice object defining the local slice of data_arrays to read from the core.
 
     Returns
     -------
-    z : ndarray
+    x3 : ndarray
         z-coordinates of the grid cells.
-    y : ndarray
+    x2 : ndarray
         y-coordinates of the grid cells.
-    x : ndarray
+    x1 : ndarray
         x-coordinates of the grid cells.
     rho : ndarray
-        Density data array.
-    rux : ndarray
-        Momentum density in the x-direction data array.
-    ruy : ndarray
-        Momentum density in the y-direction data array.
-    ruz : ndarray
-        Momentum density in the z-direction data array.
+        Density data_arrays array.
+    rux1 : ndarray
+        Momentum density in the x-direction data_arrays array.
+    rux2 : ndarray
+        Momentum density in the y-direction data_arrays array.
+    rux3 : ndarray
+        Momentum density in the z-direction data_arrays array.
     eng : ndarray
-        Energy density data array.
+        Energy density data_arrays array.
     t : float
         Simulation time of the snapshot.
     dt : float
         Timestep of the snapshot.   
     """
 
-    # Confirm it's a C binary
     try:
         file = open(binary_file, 'rb')
     except:
         print('error opening', file.name)
-        print('data must be <binary_dump>')
+        print('data_arrays must be <binary_dump>')
         raise SystemExit
 
-    # # read data from binary file
+    # Read header
     file.seek(0,2)
     eof = file.tell()
     file.seek(0,0)
 
     coordsys = np.fromfile(file, dtype=np.int32, count=1)[0]
-
-    nx, ny, nz, nvar, nscalars= np.fromfile(file,dtype=np.int32,count=5)
+    nx1, nx2, nx3, nvar, nscalars= np.fromfile(file,dtype=np.int32,count=5)
     selfgrav_boolean, particles_boolean = np.fromfile(file,dtype=np.int32,count=2)
-
     gamma1, cs = np.fromfile(file, dtype=np.float64, count=2)
-
     t,dt = np.fromfile(file, dtype=np.float64, count=2)
 
-    x = np.fromfile(file, dtype=np.float64, count=nx)
-    y = np.fromfile(file, dtype=np.float64, count=ny)
-    z = np.fromfile(file, dtype=np.float64, count=nz)
+    # Data are stored in 1->3 order, but we'll return to 3->1 order to be consistent with
+    #  the convention of x3 as the vertical direction.
+    x1 = np.fromfile(file, dtype=np.float64, count=nx1)
+    x2 = np.fromfile(file, dtype=np.float64, count=nx2)
+    x3 = np.fromfile(file, dtype=np.float64, count=nx3)
 
-    localshape = (nz, ny, nx)
-    count = np.prod(localshape) #nx*ny*nz
+    # Read and slice data
+    localshape = (nx3, nx2, nx1)
+    count = np.prod(localshape) #nx1*nx2*nx3
 
-    rho = np.fromfile(file, dtype=np.float64, count=count).reshape(localshape)[local_slice]
-    rux = np.fromfile(file, dtype=np.float64, count=count).reshape(localshape)[local_slice]
-    ruy = np.fromfile(file, dtype=np.float64, count=count).reshape(localshape)[local_slice]
-    ruz = np.fromfile(file, dtype=np.float64, count=count).reshape(localshape)[local_slice]
-    eng = np.fromfile(file, dtype=np.float64, count=count).reshape(localshape)[local_slice]
+    # Same reasoning as above for the sequence of reading data arrays breaking the convention.
+    rho  = np.fromfile(file, dtype=np.float64, count=count).reshape(localshape)[local_slice]
+    rux1 = np.fromfile(file, dtype=np.float64, count=count).reshape(localshape)[local_slice]
+    rux2 = np.fromfile(file, dtype=np.float64, count=count).reshape(localshape)[local_slice]
+    rux3 = np.fromfile(file, dtype=np.float64, count=count).reshape(localshape)[local_slice]
+    eng  = np.fromfile(file, dtype=np.float64, count=count).reshape(localshape)[local_slice]
 
     if file.tell() != eof:
         print('Error: Too few bytes read.')
 
     file.close()
 
-    return z, y, x, rho, rux, ruy, ruz, eng, t, dt
+    return x3, x2, x1, rho, rux3, rux2, rux1, eng, t, dt
 
 def get_problem_id(datadir, Ncores):
-    """Get the problem ID from the output data filename.
+    """Get the problem ID from the output data_arrays filename.
     If more than one core was used. it will account
     for the additional "id*" subdirectory structure.
 
     Parameters
     ----------
     datadir : str
-        Parent directory containing Athena output data for the run.
+        Parent directory containing Athena output data_arrays for the run.
         If Ncores > 1, this should be the directory containing the
         "id*" subdirectories.
     Ncores : int
@@ -536,7 +619,7 @@ def get_problem_id(datadir, Ncores):
     if Ncores == 1:
         jobname = os.listdir(datadir)[0].split('.')[0]
     else:
-        jobname = os.listdir(os.path.join(datadir,'id0'))[0].split('.')[0]
+        jobname = os.listdir(os.path.join(datadir, 'id0'))[0].split('.')[0]
 
     return jobname
 
