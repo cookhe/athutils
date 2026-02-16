@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Example workflow for processing Athena data to HDF5 and plotting."""
 
-from ReadAthena_fixed import Athena, AthenaSlice
-from plot_athena_slices import plot_density_timeseries, plot_single_slice
+from athutils.io.ReadAthena import Athena, AthenaSlice
+# from plot_athena_slices import plot_density_timeseries, plot_single_slice
 import numpy as np
 
 # ===== STEP 1: Extract slices and save to HDF5 =====
@@ -12,17 +12,20 @@ def process_single_run():
     
     # Initialize Athena reader
     athena = Athena(
-        file_athinput='path/to/athinput.file',
-        datadir='path/to/output/data'
+        # file_athinput='path/to/athinput.file',
+        # datadir='path/to/output/data'
+        file_athinput='/work2/07139/hecook/stampede3/supernova-runs/production/solver-test/hlle/athinput.hlle',
+        datadir='/scratch/07139/hecook/run-data/production/solver-test/hlle/athena'
     )
     
     # Define which snapshots to process
-    snapshots = list(range(0, 100, 5))  # Snapshots 0, 5, 10, ..., 95
+    # snapshots = list(range(0, 100, 5))  # Snapshots 0, 5, 10, ..., 95
+    snapshots = list(range(0, 54))
     
     # Extract slices at x3=640 (midplane) and save to HDF5
     athena.slice_to_hdf5(
         snapshots=snapshots,
-        hdf5_file='run1_slices.h5',
+        hdf5_file='/scratch/07139/hecook/run-data/production/solver-test/hlle/slices/hlle-xyslices.h5',
         x3=640  # or x2=480, or x1=480 depending on your slice preference
     )
     
@@ -31,29 +34,51 @@ def process_single_run():
 
 def process_multiple_runs():
     """Process multiple runs with different parameters."""
+
+    slc = "xzslices"
     
     runs = [
         {
-            'name': 'baseline',
-            'athinput': 'run1/athinput.baseline',
-            'datadir': 'run1/output',
-            'hdf5_out': 'baseline_slices.h5'
+            'name': 'hlle',
+            'athinput': '/work2/07139/hecook/stampede3/supernova-runs/production/solver-test/hlle/athinput.hlle',
+            'datadir': '/scratch/07139/hecook/run-data/production/solver-test/hlle/athena',
+            'hdf5_out': f'/scratch/07139/hecook/run-data/production/solver-test/hlle/slices/hlle-{slc}.h5',
+            'snapshots': list(range(0, 54)),
+            'x2': 480,
         },
         {
-            'name': 'high_energy',
-            'athinput': 'run2/athinput.high_energy',
-            'datadir': 'run2/output',
-            'hdf5_out': 'high_energy_slices.h5'
+            'name': 'z1H',
+            'athinput': '/work2/07139/hecook/stampede3/supernova-runs/production/z1H/athinput.z1H',
+            'datadir': '/scratch/07139/hecook/run-data/production/z1H/athena',
+            'hdf5_out': f'/scratch/07139/hecook/run-data/production/z1H/slices/z1H-{slc}.h5',
+            'snapshots': list(range(0, 52)),
+            'x2': 480,
         },
         {
-            'name': 'low_density',
-            'athinput': 'run3/athinput.low_density',
-            'datadir': 'run3/output',
-            'hdf5_out': 'low_density_slices.h5'
-        }
+            'name': 'midplane1e5-zoom',
+            'athinput': '/work2/07139/hecook/stampede3/supernova-runs/production/midplane1e5-zoom/athinput.r1e5-L24-C16-s0p0125',
+            'datadir': '/scratch/07139/hecook/run-data/production/midplane1e5-zoom/r1e5-L24-C16-s0p0125',
+            'hdf5_out': f'/scratch/07139/hecook/run-data/production/midplane1e5-zoom/slices/r1e5-L24-C16-{slc}.h5',
+            'snapshots': list(range(0, 17)),
+            'x2': 480,
+        },
+        {
+            'name': 'midplane-r1e3-d1H',
+            'athinput': '/work2/07139/hecook/stampede3/supernova-runs/production/midplane-r1e3-d1H/athinput.midplane-r1e3-d1H',
+            'datadir': '/scratch/07139/hecook/run-data/production/midplane-r1e3-d1H/athena',
+            'hdf5_out': f'/scratch/07139/hecook/run-data/production/midplane-r1e3-d1H/slices/midplane-r1e3-d1H-{slc}.h5',
+            'snapshots': list(range(0, 44)),
+            'x2': 480,
+        },
+        # {
+        #     'name': 'low_density',
+        #     'athinput': 'run3/athinput.low_density',
+        #     'datadir': 'run3/output',
+        #     'hdf5_out': 'low_density_slices.h5'
+        # }
     ]
     
-    snapshots = list(range(0, 50, 2))
+    # snapshots = list(range(0, 50, 2))
     
     for run in runs:
         print(f"\nProcessing {run['name']}...")
@@ -63,9 +88,9 @@ def process_multiple_runs():
         )
         
         athena.slice_to_hdf5(
-            snapshots=snapshots,
+            snapshots=run['snapshots'],
             hdf5_file=run['hdf5_out'],
-            x3=640  # midplane slice
+            x2=run['x2'] # xz slice
         )
     
     print("\nAll runs processed!")
@@ -218,7 +243,7 @@ if __name__ == '__main__':
     
     # Step 1: Process data
     # process_single_run()
-    # process_multiple_runs()
+    process_multiple_runs()
     
     # Step 2: Analyze
     # analyze_hdf5_data()
