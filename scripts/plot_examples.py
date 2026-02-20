@@ -5,7 +5,7 @@ This script demonstrates how to create various plots from Athena HDF5 data.
 Run this after you've processed your Athena data into HDF5 format.
 """
 
-from athutils_viz import (
+from athutils.viz.plotting import (
     plot_density_timeseries,
     plot_single_slice,
     plot_field_comparison
